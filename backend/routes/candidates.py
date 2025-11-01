@@ -34,60 +34,93 @@ def serve_upload(filename):
 def upload_resume():
     """
     Upload a resume and create a new candidate.
-    Requires: file, name, email, curr_company
+    Required form fields: file, name, email, curr_company
     """
-    if "file" not in request.files:
-        raise ValidationError("No file provided")
 
-    name = request.form.get("name")
-    email = request.form.get("email")
-    curr_company = request.form.get("curr_company")
-    if not all([name, email, curr_company]):
-        raise ValidationError(
-            "Missing required fields: name, email, curr_company are mandatory"
+    try:
+        # --- Validate uploaded file ---
+        if "file" not in request.files:
+            raise ValidationError("No file provided")
+
+        file = request.files["file"]
+        if not file or file.filename.strip() == "":
+            raise ValidationError("No file selected")
+
+        validate_file(file, {"pdf", "docx", "doc"})
+
+        # --- Validate form fields ---
+        name = request.form.get("name")
+        email = request.form.get("email")
+        curr_company = request.form.get("curr_company")
+
+        if not all([name, email, curr_company]):
+            raise ValidationError(
+                "Missing required fields: name, email, curr_company are mandatory"
+            )
+
+        # --- Generate unique filename & metadata ---
+        candidate_id = str(uuid.uuid4())
+        filename = secure_filename(file.filename)
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        unique_filename = f"{candidate_id}_{timestamp}_{filename}"
+
+        # --- Save resume to filesystem ---
+        try:
+            resume_path = g_document_manager.save_resume(file, unique_filename)
+        except Exception as e:
+            raise ProcessingError(f"Failed to save resume file: {e}")
+
+        # --- Create candidate record ---
+        candidate = {
+            "id": candidate_id,
+            "name": name,
+            "email": email,
+            "curr_company": curr_company,
+            "resume_filename": unique_filename,
+            "resume_path": resume_path,
+            "parsed_data": None,
+            "documents": {"pan": None, "aadhaar": None},
+            "document_requests": [],
+            "status": "parsing_resume",
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+
+        g_candidate_store.save_candidate(candidate)
+
+        # --- Trigger Celery background task ---
+        try:
+            task_result = process_resume_background.delay(candidate_id, resume_path)
+            if not task_result or not hasattr(task_result, "id"):
+                raise ProcessingError("Failed to enqueue Celery task")
+        except Exception as e:
+            # Update candidate status to failed if Celery task fails
+            candidate["status"] = "task_failed"
+            g_candidate_store.update_candidate(candidate_id, candidate)
+            raise ProcessingError(f"Celery task submission failed: {e}")
+
+        # --- Return success response ---
+        return (
+            jsonify(
+                {
+                    "message": "Resume uploaded successfully, parsing in background",
+                    "candidate_id": candidate_id,
+                    "task_id": task_result.id,
+                    "status": "parsing_resume",
+                }
+            ),
+            202,
         )
 
-    file = request.files["file"]
-    if file.filename == "":
-        raise ValidationError("No file selected")
+    except ValidationError as ve:
+        return jsonify({"error": str(ve)}), 400
 
-    validate_file(file, {"pdf", "docx", "doc"})
+    except ProcessingError as pe:
+        return jsonify({"error": str(pe)}), 500
 
-    candidate_id = str(uuid.uuid4())
-    filename = secure_filename(file.filename)
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    unique_filename = f"{candidate_id}_{timestamp}_{filename}"
-    resume_path = g_document_manager.save_resume(file, unique_filename)
-
-    candidate = {
-        "id": candidate_id,
-        "name": name,
-        "email": email,
-        "curr_company": curr_company,
-        "resume_filename": unique_filename,
-        "resume_path": resume_path,
-        "parsed_data": None,
-        "documents": {"pan": None, "aadhaar": None},
-        "document_requests": [],
-        "status": "parsing_resume",
-        "created_at": datetime.utcnow().isoformat(),
-        "updated_at": datetime.utcnow().isoformat(),
-    }
-    g_candidate_store.save_candidate(candidate)
-
-    # Trigger Celery background task
-    process_resume_background.delay(candidate_id, resume_path)
-
-    return (
-        jsonify(
-            {
-                "message": "Resume uploaded successfully, parsing in background",
-                "candidate_id": candidate_id,
-                "status": "parsing_resume",
-            }
-        ),
-        202,
-    )
+    except Exception as e:
+        # Catch-all fallback
+        return jsonify({"error": f"Unexpected error: {e}"}), 500
 
 
 @bp.route("/candidates", methods=["GET"])
@@ -150,8 +183,6 @@ def request_documents(candidate_id):
             task = generate_doc_request_background.apply_async(
                 (candidate_id,), retry=False
             )
-            print(task)
-            # Optionally check broker acknowledgment
             if not task:
                 raise ProcessingError("Failed to queue task — broker unavailable")
 

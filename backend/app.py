@@ -57,7 +57,7 @@ def handle_not_found_error(e):
     return {"error": str(e), "type": "not_found"}, 404
 @app.errorhandler(Exception)
 def handle_generic_error(e):
-    app.app.logger.error(f'Unhandled exception: {str(e)}', exc_info=True)
+    app.logger.error(f'Unhandled exception: {str(e)}', exc_info=True)
     return {"error": "Internal server error", "type": "server_error"}, 500
 
 if __name__ == '__main__':
