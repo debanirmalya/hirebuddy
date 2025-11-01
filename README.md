@@ -220,7 +220,7 @@ npm run dev
 
 ## 🎥 Demo (Loom)
 
-👉 **[Watch Demo Video](https://www.loom.com/share/your-demo-link)**
-*(Upload a 3–5 minute Loom walkthrough: architecture → resume upload → parsed data → AI document request → document upload)*
+👉 **[Watch Demo Video](https://www.loom.com/share/587dfd913c7e4e899e6b872c5d7fa113)**
+*(A 3–5 minute Loom walkthrough: architecture → resume upload → parsed data → AI document request → document upload)*
 
 ---
